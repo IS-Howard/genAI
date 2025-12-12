@@ -1,0 +1,60 @@
+# Environment variables (contains API keys)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs
+*.log
+audio_rag.log
+
+# ChromaDB data
+audio_rag/data/chromadb/
+
+# Exported transcriptions (optional - remove this line if you want to commit exports)
+audio_rag/data/transcriptions/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Audio files (optional - uncomment if you don't want to commit audio files)
+# *.mp3
+# *.wav
+# *.m4a
+# *.ogg
+# *.flac
