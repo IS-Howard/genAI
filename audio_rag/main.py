@@ -18,7 +18,6 @@ from utils import (
     print_success,
     print_error,
     print_info,
-    validate_audio_paths,
     format_file_size
 )
 from audio_processor import AudioProcessor

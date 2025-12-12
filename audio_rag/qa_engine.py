@@ -118,7 +118,7 @@ class QAEngine:
         for doc, meta, dist in zip(documents, metadatas, distances):
             source_info = {
                 'text': doc,
-                'filename': meta.get('filename') or meta.get('audio_filename'),  # Support both old and new
+                'filename': meta['filename'],
                 'chunk_index': meta['chunk_index'],
                 'distance': dist,
                 'collection': meta.get('collection_name')  # May be None for single collection queries

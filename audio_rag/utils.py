@@ -212,29 +212,6 @@ def get_unique_filename(directory: str, base_name: str, extension: str = '') -> 
     return filename
 
 
-def validate_audio_paths(paths: list, config) -> tuple:
-    """
-    Validate a list of audio file paths.
-
-    Args:
-        paths: List of file paths
-        config: Config instance for validation
-
-    Returns:
-        Tuple of (valid_paths, invalid_paths)
-    """
-    valid_paths = []
-    invalid_paths = []
-
-    for path in paths:
-        if config.validate_audio_file(path):
-            valid_paths.append(path)
-        else:
-            invalid_paths.append(path)
-
-    return valid_paths, invalid_paths
-
-
 def print_banner(title: str, width: int = 60):
     """
     Print a formatted banner for CLI output.

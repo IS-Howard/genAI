@@ -41,10 +41,10 @@ class ExportManager:
         include_metadata: bool = False
     ) -> str:
         """
-        Export a single audio transcription to file.
+        Export a single file (audio or text) to file.
 
         Args:
-            filename: Name of the audio file to export
+            filename: Name of the file to export
             format: Export format ('txt' or 'json')
             include_metadata: Include metadata header in text export
 
@@ -54,11 +54,11 @@ class ExportManager:
         Raises:
             ValueError: If format is invalid or file not found
         """
-        logger.info(f"Exporting transcription for: {filename} (format: {format})")
+        logger.info(f"Exporting content for: {filename} (format: {format})")
 
         # Check if file exists in database
         if not self.database.check_file_exists(filename):
-            raise ValueError(f"Audio file '{filename}' not found in database")
+            raise ValueError(f"File '{filename}' not found in database")
 
         # Get complete transcription
         transcription = self.database.get_transcription_by_file(filename)
@@ -67,7 +67,7 @@ class ExportManager:
             raise ValueError(f"No transcription found for '{filename}'")
 
         # Get file info for metadata
-        all_files = self.database.get_all_audio_files()
+        all_files = self.database.get_all_files()
         file_info = next((f for f in all_files if f['filename'] == filename), None)
 
         # Prepare export filename
@@ -127,12 +127,13 @@ class ExportManager:
 
         if include_metadata and file_info:
             content.append("=" * 60)
-            content.append("音訊轉錄檔 AUDIO TRANSCRIPTION")
+            content.append("文件內容 DOCUMENT CONTENT")
             content.append("=" * 60)
             content.append(f"檔案名稱 Filename: {file_info['filename']}")
-            content.append(f"轉錄日期 Transcription Date: {file_info['transcription_date']}")
+            content.append(f"來源類型 Source Type: {file_info.get('source_type', 'unknown')}")
+            content.append(f"處理日期 Processing Date: {file_info['processing_date']}")
             content.append(f"檔案大小 File Size: {format_file_size(file_info['file_size'])}")
-            content.append(f"格式 Format: {file_info['audio_format']}")
+            content.append(f"格式 Format: {file_info['file_format']}")
             content.append(f"片段數量 Total Chunks: {file_info['total_chunks']}")
             content.append("=" * 60)
             content.append("")
@@ -202,10 +203,10 @@ class ExportManager:
         """
         logger.info(f"Exporting all transcriptions (format: {format})")
 
-        all_files = self.database.get_all_audio_files()
+        all_files = self.database.get_all_files()
 
         if not all_files:
-            logger.warning("No audio files found in database")
+            logger.warning("No files found in database")
             return []
 
         exported_paths = []
@@ -229,23 +230,23 @@ class ExportManager:
 
     def export_with_chunks(self, filename: str) -> str:
         """
-        Export transcription with individual chunk information.
+        Export content with individual chunk information.
 
         Args:
-            filename: Name of the audio file to export
+            filename: Name of the file to export
 
         Returns:
             Path to exported file
         """
-        logger.info(f"Exporting chunked transcription for: {filename}")
+        logger.info(f"Exporting chunked content for: {filename}")
 
         # Check if file exists
         if not self.database.check_file_exists(filename):
-            raise ValueError(f"Audio file '{filename}' not found in database")
+            raise ValueError(f"File '{filename}' not found in database")
 
         # Get all chunks for this file
         results = self.database.collection.get(
-            where={"audio_filename": filename}
+            where={"filename": filename}
         )
 
         if not results['documents']:
@@ -272,7 +273,7 @@ class ExportManager:
 
         # Build JSON structure with chunks
         data = {
-            'audio_filename': filename,
+            'filename': filename,
             'total_chunks': len(chunks_data),
             'chunks': [],
             'metadata': chunks_data[0][1] if chunks_data else {},

@@ -384,12 +384,6 @@ class AudioRAGDatabase:
 
         return files_list
 
-    def get_all_audio_files(self) -> list:
-        """
-        Legacy method - redirects to get_all_files().
-        Kept for backward compatibility.
-        """
-        return self.get_all_files()
 
     def get_transcription_by_file(self, filename: str) -> str:
         """
@@ -472,7 +466,7 @@ class AudioRAGDatabase:
             self.initialize_collection()
 
         total_chunks = self.collection.count()
-        all_files = self.get_all_audio_files()
+        all_files = self.get_all_files()
 
         stats = {
             'total_chunks': total_chunks,
