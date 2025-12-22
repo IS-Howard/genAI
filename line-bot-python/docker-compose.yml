@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Line Bot Application
+  line-bot:
+    build: .
+    container_name: line-bot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL}
+      - DATABASE_URL=postgresql://hown:${DB_PASSWORD}@postgres:5432/n8n
+    depends_on:
+      - postgres
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - line-bot-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: line-bot-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=hown
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=n8n
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - line-bot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hown"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+
+networks:
+  line-bot-network:
+    driver: bridge
