@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # Limits
     max_history_items: int = 50
     max_ai_context_items: int = 20
+    max_files_per_group: int = 2
 
     # Optional
     train_booker_image: str = "train-booker"

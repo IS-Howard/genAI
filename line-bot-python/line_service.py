@@ -3,7 +3,7 @@ Line API Service
 Handles Line Bot API interactions
 """
 import httpx
-from typing import Optional
+from typing import Optional, Dict
 from loguru import logger
 from config import settings
 
@@ -67,11 +67,18 @@ class LineService:
                     headers=self.headers,
                     timeout=10.0
                 )
-                response.raise_for_status()
-                return response.json()
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        'displayName': data.get('displayName', '使用者'),
+                        'pictureUrl': data.get('pictureUrl'),
+                        'statusMessage': data.get('statusMessage')
+                    }
+                return None
         except Exception as e:
-            logger.error(f"Failed to get user profile (type={source_type}, group={group_id}): {e}")
+            logger.error(f"Failed to get user profile: {e}")
             return None
+
 
     async def get_message_content(self, message_id: str) -> Optional[bytes]:
         """

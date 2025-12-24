@@ -2,16 +2,22 @@
 Line Bot Main Application
 FastAPI server with webhook handling
 """
+import sys
+import asyncio
 import subprocess
 from contextlib import asynccontextmanager
+from typing import Optional
+from collections import deque
+
 from fastapi import FastAPI, Request, HTTPException
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, AudioMessageContent, JoinEvent
-from linebot.v3.messaging import ApiClient, MessagingApi, Configuration, ReplyMessageRequest, TextMessage
+from linebot.v3.messaging import Configuration
+from linebot.v3.webhooks import (
+    MessageEvent, TextMessageContent, ImageMessageContent,
+    AudioMessageContent, JoinEvent
+)
 from loguru import logger
-from typing import Optional
-import sys
 
 from config import settings
 from database import db
@@ -26,6 +32,19 @@ logger.add(
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
     level=settings.log_level
 )
+
+
+# Deduplication: Track recent message IDs to prevent double processing
+_processed_messages = deque(maxlen=100)
+
+def is_duplicate(message_id: str) -> bool:
+    """Check if message was already processed"""
+    if not message_id:
+        return False
+    if message_id in _processed_messages:
+        return True
+    _processed_messages.append(message_id)
+    return False
 
 
 # Line Bot SDK v3
@@ -45,7 +64,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-# FastAPI app with lifespan
+# FastAPI app
 app = FastAPI(title="Line Bot", version="1.0.0", lifespan=lifespan)
 
 
@@ -67,36 +86,31 @@ class MessageRouter:
                 'text': text.replace('訂火車', '').strip(),
                 'original_text': text
             }
-        elif text.startswith('看圖片') or text.startswith('聽音檔'):
-            return {
-                'route': 'ignore',
-                'text': text,
-                'original_text': text
-            }
+
         # Normal 1-on-1 chat
-        elif source_type == 'user':
+        if source_type == 'user':
             return {
                 'route': 'normal',
                 'text': text,
                 'original_text': text
             }
+
         # Group chat with mention
-        elif source_type in ['group', 'room'] and 'HOWN' in text.upper():
+        if source_type in ['group', 'room'] and 'HOWN' in text.upper():
             return {
                 'route': 'group',
                 'text': text.replace('@HOWN_BOT', '').strip(),
                 'original_text': text
             }
-        else:
-            if source_type in ['group', 'room']:
-                logger.info(f"Ignored group/room message (no mention): {text[:20]}")
-            else:
-                logger.info(f"Ignored message from {source_type}")
-            return {
-                'route': 'ignore',
-                'text': text,
-                'original_text': text
-            }
+
+        # Ignore other messages
+        if source_type in ['group', 'room']:
+            logger.debug(f"Ignored group/room message (no mention): {text[:20]}")
+        return {
+            'route': 'ignore',
+            'text': text,
+            'original_text': text
+        }
 
     @staticmethod
     async def handle_text_message(
@@ -119,9 +133,9 @@ class MessageRouter:
         try:
             # Get conversation history
             if group_id:
-                history = await db.get_group_history(group_id)
+                history = await db.get_group_history(group_id, limit=settings.max_history_items)
             else:
-                history = await db.get_user_history(user_id)
+                history = await db.get_user_history(user_id, limit=settings.max_history_items)
 
             response_text = None
 
@@ -130,12 +144,12 @@ class MessageRouter:
                 response_text = await ai_service.normal_chat(routing['text'], user_name, history)
 
             elif routing['route'] == 'group':
-                response_text = await ai_service.group_chat(routing['text'], user_name, history)
+                response_text = await ai_service.group_chat(routing['text'], user_name, group_id, history)
 
             elif routing['route'] == 'train':
                 response_text = await MessageRouter.book_train(routing['text'])
 
-            # Save to database
+            # Save to database and reply
             if response_text:
                 await db.save_message(
                     user_id=user_id,
@@ -144,8 +158,6 @@ class MessageRouter:
                     bot_message=response_text,
                     group_id=group_id
                 )
-
-                # Send reply
                 await line_service.reply_message(reply_token, response_text)
 
         except Exception as e:
@@ -160,43 +172,30 @@ class MessageRouter:
         reply_token: str,
         group_id: Optional[str] = None
     ):
-        """Handle image message"""
+        """Handle image message - SILENT SAVE (GROUP ONLY)"""
+        if not group_id:
+            logger.debug("Ignoring image upload (not in a group)")
+            return
+
         try:
             # Get image data
             image_data = await line_service.get_message_content(message_id)
             if not image_data:
-                await line_service.reply_message(reply_token, "無法取得圖片")
                 return
 
-            # Get last message for context
-            if group_id:
-                history = await db.get_group_history(group_id, limit=1)
-            else:
-                history = await db.get_user_history(user_id, limit=1)
-
-            prompt = "請描述這張圖片"
-            if history and history[-1].get('user_message'):
-                last_msg = history[-1]['user_message']
-                if last_msg.startswith('看圖片'):
-                    prompt = last_msg.replace('看圖片', '').strip() or prompt
-
-            # Analyze image
-            response_text = await ai_service.analyze_image(image_data, prompt)
-
-            # Save and reply
-            await db.save_message(
+            # Save to database (FIFO cleanup handled inside)
+            await db.save_file(
+                group_id=group_id,
                 user_id=user_id,
-                user_name=user_name,
-                user_message="[圖片]",
-                bot_message=response_text,
-                group_id=group_id
+                file_type='image',
+                mime_type='image/jpeg',
+                file_data=image_data,
+                message_id=message_id
             )
-
-            await line_service.reply_message(reply_token, response_text)
+            logger.info(f"Image saved for group {group_id} by {user_id}")
 
         except Exception as e:
-            logger.error(f"Error handling image: {e}")
-            await line_service.reply_message(reply_token, "圖片處理失敗")
+            logger.error(f"Error handling group image: {e}")
 
     @staticmethod
     async def handle_audio_message(
@@ -206,50 +205,34 @@ class MessageRouter:
         reply_token: str,
         group_id: Optional[str] = None
     ):
-        """Handle audio message"""
+        """Handle audio message - SILENT SAVE (GROUP ONLY)"""
+        if not group_id:
+            logger.debug("Ignoring audio upload (not in a group)")
+            return
+
         try:
             # Get audio data
             audio_data = await line_service.get_message_content(message_id)
             if not audio_data:
-                await line_service.reply_message(reply_token, "無法取得音檔")
                 return
 
-            # Get last message for context
-            if group_id:
-                history = await db.get_group_history(group_id, limit=1)
-            else:
-                history = await db.get_user_history(user_id, limit=1)
-
-            # Get prompt from last message if available
-            prompt = "請分析這段音檔"
-            if history and history[-1].get('user_message'):
-                last_msg = history[-1]['user_message']
-                if last_msg.startswith('聽音檔'):
-                    prompt = last_msg.replace('聽音檔', '').strip() or prompt
-
-            # Process audio
-            response_text = await ai_service.analyze_audio(audio_data, prompt)
-
-            # Save and reply
-            await db.save_message(
+            # Save to database (FIFO cleanup handled inside)
+            await db.save_file(
+                group_id=group_id,
                 user_id=user_id,
-                user_name=user_name,
-                user_message="[音檔]",
-                bot_message=response_text,
-                group_id=group_id
+                file_type='audio',
+                mime_type='audio/mpeg',
+                file_data=audio_data,
+                message_id=message_id
             )
-
-            await line_service.reply_message(reply_token, response_text)
+            logger.info(f"Audio saved for group {group_id} by {user_id}")
 
         except Exception as e:
-            logger.error(f"Error handling audio: {e}")
-            await line_service.reply_message(reply_token, "音檔處理失敗")
+            logger.error(f"Error handling group audio: {e}")
 
     @staticmethod
     async def book_train(params: str) -> str:
-        """
-        Book train using Docker command
-        """
+        """Book train using Docker command"""
         try:
             cmd = f"docker run --rm {settings.train_booker_image} {params}"
             result = subprocess.run(
@@ -272,8 +255,7 @@ class MessageRouter:
             return "訂票失敗"
 
 
-# Startup and shutdown now handled by lifespan context manager above
-
+# ===== FastAPI Routes =====
 
 @app.get("/")
 async def root():
@@ -292,7 +274,6 @@ async def webhook(request: Request):
     body_str = body.decode("utf-8")
 
     try:
-        # Verify signature
         handler.handle(body_str, signature)
     except InvalidSignatureError:
         logger.error("Invalid signature")
@@ -301,30 +282,28 @@ async def webhook(request: Request):
     return "OK"
 
 
+# ===== Line Bot Event Handlers =====
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
     """Handle text message event"""
-    import asyncio
+    message_id = event.message.id
+    if is_duplicate(message_id):
+        logger.warning(f"Duplicate TextMessage {message_id} ignored")
+        return
 
     user_id = event.source.user_id
     text = event.message.text
     reply_token = event.reply_token
-
-    # Get source type and group_id
     source_type = event.source.type
-    group_id = getattr(event.source, 'group_id', None)
-    if not group_id:
-        group_id = getattr(event.source, 'room_id', None)
+    group_id = getattr(event.source, 'group_id', None) or getattr(event.source, 'room_id', None)
 
-    logger.debug(f"Event: {event.type} | Source: {source_type} | Group/Room ID: {group_id}")
-
-    # Get or create user name
     async def process():
         try:
+            # Get or create user mapping
             user_mapping = await db.get_user_mapping(user_id)
 
             if not user_mapping:
-                # Fetch from Line API
                 profile = await line_service.get_user_profile(user_id, group_id, source_type)
                 user_name = profile.get('displayName', user_id[-4:]) if profile else user_id[-4:]
                 await db.save_user_mapping(user_id, user_name)
@@ -341,7 +320,7 @@ def handle_text(event):
                 group_id=group_id
             )
         except Exception as e:
-            logger.error(f"Error in background process: {e}")
+            logger.error(f"Error in text handler: {e}")
 
     asyncio.create_task(process())
 
@@ -349,10 +328,12 @@ def handle_text(event):
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event):
     """Handle image message event"""
-    import asyncio
+    message_id = event.message.id
+    if is_duplicate(message_id):
+        logger.warning(f"Duplicate ImageMessage {message_id} ignored")
+        return
 
     user_id = event.source.user_id
-    message_id = event.message.id
     reply_token = event.reply_token
     group_id = getattr(event.source, 'group_id', None)
 
@@ -374,10 +355,12 @@ def handle_image(event):
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event):
     """Handle audio message event"""
-    import asyncio
+    message_id = event.message.id
+    if is_duplicate(message_id):
+        logger.warning(f"Duplicate AudioMessage {message_id} ignored")
+        return
 
     user_id = event.source.user_id
-    message_id = event.message.id
     reply_token = event.reply_token
     group_id = getattr(event.source, 'group_id', None)
 
@@ -399,8 +382,6 @@ def handle_audio(event):
 @handler.add(JoinEvent)
 def handle_join(event):
     """Handle bot join group event"""
-    import asyncio
-
     reply_token = event.reply_token
 
     async def process():
@@ -412,12 +393,14 @@ def handle_join(event):
     asyncio.create_task(process())
 
 
+# ===== Application Entry Point =====
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "main:app",
+        app,
         host="0.0.0.0",
         port=settings.port,
-        reload=settings.debug
+        log_config=None  # Use Loguru instead
     )

@@ -20,6 +20,7 @@ if /i "%~1"=="status" goto status
 if /i "%~1"=="logs" goto logs
 if /i "%~1"=="backup" goto backup
 if /i "%~1"=="restore" goto restore
+if /i "%~1"=="migrate" goto migrate
 
 :usage
 echo.
@@ -34,6 +35,7 @@ echo   status   - Show status of services
 echo   logs     - Follow application logs
 echo   backup   - Backup database volume to %BACKUP_FILE%
 echo   restore  - Restore database volume from %BACKUP_FILE%
+echo   migrate  - Apply init.sql schema updates to existing database
 echo.
 exit /b 0
 
@@ -68,6 +70,8 @@ findstr /R "^LINE_CHANNEL_SECRET=..*" .env >nul || set /a missing+=1
 findstr /R "^LINE_CHANNEL_ACCESS_TOKEN=..*" .env >nul || set /a missing+=1
 findstr /R "^GEMINI_API_KEY=..*" .env >nul || set /a missing+=1
 findstr /R "^DB_PASSWORD=..*" .env >nul || set /a missing+=1
+findstr /R "^DB_NAME=..*" .env >nul || set /a missing+=1
+findstr /R "^DB_USER=..*" .env >nul || set /a missing+=1
 
 if %missing% GTR 0 (
     echo [ERROR] Some required variables are missing or empty in .env
@@ -78,8 +82,8 @@ if %missing% GTR 0 (
 
 echo [OK] Environment ready!
 echo.
-echo Starting services...
-docker-compose up -d
+echo Starting services (with build)...
+docker-compose up -d --build
 
 echo.
 echo Waiting for services to start...
@@ -99,8 +103,8 @@ exit /b 0
 
 :start
 echo.
-echo [Start] Starting services...
-docker-compose up -d
+echo [Start] Starting services (with build)...
+docker-compose up -d --build
 exit /b %ERRORLEVEL%
 
 :stop
@@ -111,8 +115,8 @@ exit /b %ERRORLEVEL%
 
 :restart
 echo.
-echo [Restart] Restarting application...
-docker-compose restart line-bot
+echo [Restart] Recreating application (with build)...
+docker-compose up -d --build line-bot
 exit /b %ERRORLEVEL%
 
 :status
@@ -169,11 +173,37 @@ docker run --rm ^
     alpine tar xzf /backup/db_storage_backup.tar.gz -C /data
 if %ERRORLEVEL% EQU 0 (
     echo [OK] Restore successful
-    docker-compose up -d
+    docker-compose up -d --build
     echo.
-    echo To verify the restore, run:
-    echo   docker exec -it line-bot-db psql -U postgres -d line_bot -c "SELECT COUNT(*) FROM chat_history;"
+    echo To verify the restore, check your .env for DB_USER and DB_NAME, then run:
+    echo   docker exec -it line-bot-db psql -U [user] -d [db] -c "SELECT COUNT(*) FROM chat_history;"
 ) else (
     echo [ERROR] Restore failed
+)
+exit /b %ERRORLEVEL%
+
+:migrate
+echo.
+echo [Migrate] Applying schema updates from init.sql...
+
+:: Read .env to get DB credentials
+for /f "tokens=1,2 delims==" %%a in ('findstr /R "^DB_USER=" .env') do set DB_USER=%%b
+for /f "tokens=1,2 delims==" %%a in ('findstr /R "^DB_NAME=" .env') do set DB_NAME=%%b
+
+if not defined DB_USER set DB_USER=hown
+if not defined DB_NAME set DB_NAME=n8n
+
+echo Using database: %DB_USER%@%DB_NAME%
+echo.
+
+docker exec -i line-bot-db psql -U %DB_USER% %DB_NAME% < init.sql
+
+if %ERRORLEVEL% EQU 0 (
+    echo [OK] Schema migration completed successfully
+    echo.
+    echo Restarting application to apply changes...
+    docker-compose restart line-bot
+) else (
+    echo [ERROR] Migration failed
 )
 exit /b %ERRORLEVEL%

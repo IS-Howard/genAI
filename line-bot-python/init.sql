@@ -50,6 +50,24 @@ BEFORE UPDATE ON user_mapping
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
 
+
+-- Create stored_files table for file management (GROUP ONLY)
+CREATE TABLE IF NOT EXISTS stored_files (
+    id SERIAL PRIMARY KEY,
+    group_id VARCHAR(100) NOT NULL, -- Mandatory now as per group-only constraint
+    user_id VARCHAR(100) NOT NULL,  -- Uploader
+    file_type VARCHAR(20) NOT NULL,  -- 'image', 'audio'
+    mime_type VARCHAR(50) NOT NULL,  -- 'image/jpeg', 'audio/mpeg', etc.
+    file_data BYTEA NOT NULL,        -- Binary file content
+    file_size_bytes INTEGER NOT NULL,
+    original_message_id VARCHAR(100),
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for fast group file lookup (ordered by upload time)
+CREATE INDEX IF NOT EXISTS idx_stored_files_group
+ON stored_files(group_id, uploaded_at DESC);
+
 -- Grant permissions (if using specific user)
 -- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO line_bot_user;
 -- GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO line_bot_user;

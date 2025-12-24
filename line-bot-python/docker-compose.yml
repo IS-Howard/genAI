@@ -13,10 +13,11 @@ services:
       - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL}
-      - DATABASE_URL=postgresql://hown:${DB_PASSWORD}@postgres:5432/n8n
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
     depends_on:
       - postgres
     volumes:
+      - .:/app
       - ./logs:/app/logs
     networks:
       - line-bot-network
@@ -27,16 +28,16 @@ services:
     container_name: line-bot-db
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=hown
+      - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_DB=n8n
+      - POSTGRES_DB=${DB_NAME}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - line-bot-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hown"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5

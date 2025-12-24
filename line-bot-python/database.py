@@ -137,5 +137,54 @@ class Database:
             return False
 
 
+    async def save_file(
+        self,
+        group_id: str,
+        user_id: str,
+        file_type: str,
+        mime_type: str,
+        file_data: bytes,
+        message_id: Optional[str] = None
+    ) -> Optional[int]:
+        """Save file with FIFO cleanup (GROUP ONLY)"""
+        try:
+            file_size = len(file_data)
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO stored_files
+                    (group_id, user_id, file_type, mime_type, file_data, file_size_bytes, original_message_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    RETURNING id
+                    """,
+                    group_id, user_id, file_type, mime_type, file_data, file_size, message_id
+                )
+                
+                # FIFO cleanup based on global config
+                await conn.execute(
+                    "DELETE FROM stored_files WHERE id IN (SELECT id FROM stored_files WHERE group_id = $1 ORDER BY uploaded_at DESC OFFSET $2)",
+                    group_id, settings.max_files_per_group
+                )
+                return row['id'] if row else None
+        except Exception as e:
+            logger.error(f"Failed to save group file: {e}")
+            return None
+
+    async def get_latest_group_file(self, group_id: str, file_type: Optional[str] = None) -> Optional[Dict]:
+        """Get latest file for a group"""
+        async with self.pool.acquire() as conn:
+            if file_type:
+                row = await conn.fetchrow(
+                    "SELECT id, file_type, mime_type, file_data, file_size_bytes, uploaded_at FROM stored_files WHERE group_id = $1 AND file_type = $2 ORDER BY uploaded_at DESC LIMIT 1",
+                    group_id, file_type
+                )
+            else:
+                row = await conn.fetchrow(
+                    "SELECT id, file_type, mime_type, file_data, file_size_bytes, uploaded_at FROM stored_files WHERE group_id = $1 ORDER BY uploaded_at DESC LIMIT 1",
+                    group_id
+                )
+            return dict(row) if row else None
+
+
 # Global database instance
 db = Database()
