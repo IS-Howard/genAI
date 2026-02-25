@@ -15,7 +15,8 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import Configuration
 from linebot.v3.webhooks import (
     MessageEvent, TextMessageContent, ImageMessageContent,
-    AudioMessageContent, JoinEvent
+    AudioMessageContent, JoinEvent, VideoMessageContent,
+    FileMessageContent, LocationMessageContent, StickerMessageContent
 )
 from loguru import logger
 
@@ -173,29 +174,7 @@ class MessageRouter:
         group_id: Optional[str] = None
     ):
         """Handle image message - SILENT SAVE (GROUP ONLY)"""
-        if not group_id:
-            logger.debug("Ignoring image upload (not in a group)")
-            return
-
-        try:
-            # Get image data
-            image_data = await line_service.get_message_content(message_id)
-            if not image_data:
-                return
-
-            # Save to database (FIFO cleanup handled inside)
-            await db.save_file(
-                group_id=group_id,
-                user_id=user_id,
-                file_type='image',
-                mime_type='image/jpeg',
-                file_data=image_data,
-                message_id=message_id
-            )
-            logger.info(f"Image saved for group {group_id} by {user_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling group image: {e}")
+        await MessageRouter._save_attachment(message_id, user_id, 'image', 'image/jpeg', group_id)
 
     @staticmethod
     async def handle_audio_message(
@@ -206,29 +185,76 @@ class MessageRouter:
         group_id: Optional[str] = None
     ):
         """Handle audio message - SILENT SAVE (GROUP ONLY)"""
+        await MessageRouter._save_attachment(message_id, user_id, 'audio', 'audio/mpeg', group_id)
+
+    @staticmethod
+    async def handle_video_message(
+        message_id: str,
+        user_id: str,
+        user_name: str,
+        reply_token: str,
+        group_id: Optional[str] = None
+    ):
+        """Handle video message - SILENT SAVE (GROUP ONLY)"""
+        await MessageRouter._save_attachment(message_id, user_id, 'video', 'video/mp4', group_id)
+
+    @staticmethod
+    async def handle_file_message(
+        message_id: str,
+        user_id: str,
+        user_name: str,
+        reply_token: str,
+        file_name: str,
+        file_size: int,
+        group_id: Optional[str] = None
+    ):
+        """Handle file message - Detect type and SILENT SAVE (GROUP ONLY)"""
         if not group_id:
-            logger.debug("Ignoring audio upload (not in a group)")
+            return
+
+        # Detect type from extension
+        ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+        file_type = 'file'
+        mime_type = 'application/octet-stream'
+
+        if ext in ['jpg', 'jpeg', 'png', 'gif']:
+            file_type = 'image'
+            mime_type = f'image/{ext if ext != "jpg" else "jpeg"}'
+        elif ext in ['mp3', 'm4a', 'wav']:
+            file_type = 'audio'
+            mime_type = 'audio/mpeg' if ext != 'wav' else 'audio/wav'
+        elif ext in ['mp4', 'mov', 'avi']:
+            file_type = 'video'
+            mime_type = 'video/mp4'
+
+        await MessageRouter._save_attachment(message_id, user_id, file_type, mime_type, group_id)
+
+    @staticmethod
+    async def _save_attachment(message_id: str, user_id: str, file_type: str, mime_type: str, group_id: Optional[str]):
+        """Helper to save media/file content to DB"""
+        if not group_id:
+            logger.debug(f"Ignoring {file_type} upload (not in a group)")
             return
 
         try:
-            # Get audio data
-            audio_data = await line_service.get_message_content(message_id)
-            if not audio_data:
+            # Get data
+            data = await line_service.get_message_content(message_id)
+            if not data:
                 return
 
-            # Save to database (FIFO cleanup handled inside)
+            # Save to database
             await db.save_file(
                 group_id=group_id,
                 user_id=user_id,
-                file_type='audio',
-                mime_type='audio/mpeg',
-                file_data=audio_data,
+                file_type=file_type,
+                mime_type=mime_type,
+                file_data=data,
                 message_id=message_id
             )
-            logger.info(f"Audio saved for group {group_id} by {user_id}")
+            logger.info(f"{file_type.capitalize()} saved for group {group_id} by {user_id}")
 
         except Exception as e:
-            logger.error(f"Error handling group audio: {e}")
+            logger.error(f"Error handling group {file_type}: {e}")
 
     @staticmethod
     async def book_train(params: str) -> str:
@@ -273,6 +299,8 @@ async def webhook(request: Request):
     body = await request.body()
     body_str = body.decode("utf-8")
 
+    logger.debug(f"Received webhook: {body_str}")
+
     try:
         handler.handle(body_str, signature)
     except InvalidSignatureError:
@@ -297,6 +325,8 @@ def handle_text(event):
     reply_token = event.reply_token
     source_type = event.source.type
     group_id = getattr(event.source, 'group_id', None) or getattr(event.source, 'room_id', None)
+
+    logger.info(f"Received TextMessage: {text[:50]}... from {user_id} in {source_type} {group_id or ''}")
 
     async def process():
         try:
@@ -336,6 +366,9 @@ def handle_image(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
     group_id = getattr(event.source, 'group_id', None)
+    source_type = event.source.type
+
+    logger.info(f"Received ImageMessage: {message_id} from {user_id} in {source_type} {group_id or ''}")
 
     async def process():
         user_mapping = await db.get_user_mapping(user_id)
@@ -363,6 +396,9 @@ def handle_audio(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
     group_id = getattr(event.source, 'group_id', None)
+    source_type = event.source.type
+
+    logger.info(f"Received AudioMessage: {message_id} from {user_id} in {source_type} {group_id or ''}")
 
     async def process():
         user_mapping = await db.get_user_mapping(user_id)
@@ -377,6 +413,112 @@ def handle_audio(event):
         )
 
     asyncio.create_task(process())
+
+
+@handler.add(MessageEvent, message=VideoMessageContent)
+def handle_video(event):
+    """Handle video message event"""
+    message_id = event.message.id
+    if is_duplicate(message_id):
+        logger.warning(f"Duplicate VideoMessage {message_id} ignored")
+        return
+
+    user_id = event.source.user_id
+    reply_token = event.reply_token
+    group_id = getattr(event.source, 'group_id', None)
+    source_type = event.source.type
+
+    logger.info(f"Received VideoMessage: {message_id} from {user_id} in {source_type} {group_id or ''}")
+
+    async def process():
+        user_mapping = await db.get_user_mapping(user_id)
+        user_name = user_mapping['user_name'] if user_mapping else user_id[-4:]
+
+        await MessageRouter.handle_video_message(
+            message_id=message_id,
+            user_id=user_id,
+            user_name=user_name,
+            reply_token=reply_token,
+            group_id=group_id
+        )
+
+    asyncio.create_task(process())
+
+
+@handler.add(MessageEvent, message=FileMessageContent)
+def handle_file(event):
+    """Handle file message event"""
+    message_id = event.message.id
+    if is_duplicate(message_id):
+        logger.warning(f"Duplicate FileMessage {message_id} ignored")
+        return
+
+    user_id = event.source.user_id
+    reply_token = event.reply_token
+    group_id = getattr(event.source, 'group_id', None)
+    source_type = event.source.type
+    file_name = event.message.file_name
+    file_size = event.message.file_size
+
+    logger.info(f"Received FileMessage: {file_name} ({file_size} bytes) from {user_id} in {source_type} {group_id or ''}")
+
+    async def process():
+        user_mapping = await db.get_user_mapping(user_id)
+        user_name = user_mapping['user_name'] if user_mapping else user_id[-4:]
+
+        await MessageRouter.handle_file_message(
+            message_id=message_id,
+            user_id=user_id,
+            user_name=user_name,
+            reply_token=reply_token,
+            file_name=file_name,
+            file_size=file_size,
+            group_id=group_id
+        )
+
+    asyncio.create_task(process())
+
+
+@handler.add(MessageEvent, message=StickerMessageContent)
+def handle_sticker(event):
+    """Handle sticker message event"""
+    message_id = event.message.id
+    if is_duplicate(message_id): return
+
+    user_id = event.source.user_id
+    source_type = event.source.type
+    group_id = getattr(event.source, 'group_id', None)
+    package_id = event.message.package_id
+    sticker_id = event.message.sticker_id
+
+    logger.info(f"Received StickerMessage: Package={package_id} Sticker={sticker_id} from {user_id} in {source_type} {group_id or ''}")
+
+
+@handler.add(MessageEvent, message=LocationMessageContent)
+def handle_location(event):
+    """Handle location message event"""
+    message_id = event.message.id
+    if is_duplicate(message_id): return
+
+    user_id = event.source.user_id
+    source_type = event.source.type
+    group_id = getattr(event.source, 'group_id', None)
+    title = event.message.title
+    address = event.message.address
+
+    logger.info(f"Received LocationMessage: {title} ({address}) from {user_id} in {source_type} {group_id or ''}")
+
+
+@handler.add(MessageEvent)
+def handle_message(event):
+    """Generic fallback for unhandled message types"""
+    message_id = getattr(event.message, 'id', 'N/A')
+    message_type = event.message.type
+    user_id = event.source.user_id
+    source_type = event.source.type
+    group_id = getattr(event.source, 'group_id', None)
+
+    logger.info(f"Received {message_type} (unhandled): {message_id} from {user_id} in {source_type} {group_id or ''}")
 
 
 @handler.add(JoinEvent)
